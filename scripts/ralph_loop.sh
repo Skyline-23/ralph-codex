@@ -23,11 +23,11 @@ state_file() {
 }
 
 ensure_hooks() {
-  "$SCRIPT_DIR/install.sh" >/dev/null
+  /bin/bash "$SCRIPT_DIR/install.sh" >/dev/null
 }
 
 remove_hooks() {
-  "$SCRIPT_DIR/uninstall.sh" >/dev/null
+  /bin/bash "$SCRIPT_DIR/uninstall.sh" >/dev/null
 }
 
 exclude_state_dir() {
