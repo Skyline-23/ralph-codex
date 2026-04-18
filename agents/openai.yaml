@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph Codex"
+  short_description: "Native-hook persistent operator loop"
+  default_prompt: "Use $ralph-codex to keep Codex iterating with a native-hook operator loop."
