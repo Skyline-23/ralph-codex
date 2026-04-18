@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 command_name="${1:-}"
 if [[ -z "$command_name" ]]; then
   echo "usage: ralph_loop.sh <start|status|stop|resume|reset> [args]" >&2
@@ -18,6 +20,14 @@ state_dir() {
 
 state_file() {
   printf '%s/state.json\n' "$(state_dir)"
+}
+
+ensure_hooks() {
+  "$SCRIPT_DIR/install.sh" >/dev/null
+}
+
+remove_hooks() {
+  "$SCRIPT_DIR/uninstall.sh" >/dev/null
 }
 
 exclude_state_dir() {
@@ -67,6 +77,7 @@ start_loop() {
     exit 1
   fi
 
+  ensure_hooks
   exclude_state_dir
   mkdir -p "$(state_dir)"
   touch "$(state_dir)/run.log"
@@ -138,12 +149,15 @@ case "$command_name" in
     ;;
   stop)
     toggle_active false
+    remove_hooks
     ;;
   resume)
+    ensure_hooks
     toggle_active true
     ;;
   reset)
     reset_loop
+    remove_hooks
     ;;
   *)
     echo "unknown command: $command_name" >&2

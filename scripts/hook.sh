@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 event="${1:-}"
 if [[ -z "$event" ]]; then
   echo "usage: hook.sh <session-start|user-prompt|stop>" >&2
@@ -9,6 +11,7 @@ fi
 
 HOOK_PAYLOAD=$(cat)
 export HOOK_PAYLOAD
+export HOOK_SCRIPT_DIR="$SCRIPT_DIR"
 
 python3 - "$event" <<'PY'
 import datetime as dt
@@ -46,6 +49,16 @@ def write_state(path, state):
     path.write_text(json.dumps(state, indent=2) + "\n")
 
 
+def cleanup_hooks():
+    script = pathlib.Path(os.environ["HOOK_SCRIPT_DIR"]) / "uninstall.sh"
+    subprocess.run(
+        ["/bin/bash", str(script)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def summarize_state(state):
     turn_text = f'{state["turn_count"]}'
     if state.get("max_turns") is not None:
@@ -72,6 +85,7 @@ if root is None:
 
 state, state_path = load_state(root)
 if not state or not state.get("active"):
+    cleanup_hooks()
     sys.exit(0)
 
 if event in {"session-start", "user-prompt"}:
@@ -97,6 +111,7 @@ if has_done_marker(last_message, state["done_marker"]):
     state["stopped_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     state["updated_at"] = state["stopped_at"]
     write_state(state_path, state)
+    cleanup_hooks()
     sys.exit(0)
 
 state["turn_count"] += 1
@@ -133,6 +148,7 @@ if state.get("max_turns") is not None and state["turn_count"] >= state["max_turn
     state["stopped_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     state["updated_at"] = state["stopped_at"]
     write_state(state_path, state)
+    cleanup_hooks()
     print(
         json.dumps(
             {
