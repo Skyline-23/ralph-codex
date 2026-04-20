@@ -69,7 +69,12 @@ def ensure_feature_flag(path: pathlib.Path) -> None:
 def load_hooks(path: pathlib.Path) -> dict:
     if not path.exists():
         return {"hooks": {}}
-    data = json.loads(path.read_text())
+    text = path.read_text()
+    decoder = json.JSONDecoder()
+    try:
+        data, _ = decoder.raw_decode(text.lstrip())
+    except json.JSONDecodeError:
+        data = {"hooks": {}}
     if not isinstance(data, dict):
         raise SystemExit("hooks.json must contain an object")
     hooks = data.setdefault("hooks", {})

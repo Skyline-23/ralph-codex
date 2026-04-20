@@ -39,10 +39,18 @@ def repo_root_from(payload_cwd):
 
 
 def load_state(root):
-    path = root / ".codex-ralph" / "state.json"
-    if not path.exists():
-        return None, path
-    return json.loads(path.read_text()), path
+    state_path = root / ".codex-ralph" / "state.json"
+    if state_path.exists():
+        return json.loads(state_path.read_text()), state_path, str(root)
+    pointer_path = root / ".codex-ralph" / "session.json"
+    if pointer_path.exists():
+        pointer = json.loads(pointer_path.read_text())
+        state_path = pathlib.Path(pointer["state_path"])
+        primary_repo = pointer.get("primary_repo", str(root))
+        if state_path.exists():
+            return json.loads(state_path.read_text()), state_path, primary_repo
+        return None, state_path, primary_repo
+    return None, state_path, str(root)
 
 
 def write_state(path, state):
@@ -53,6 +61,16 @@ def cleanup_hooks():
     script = pathlib.Path(os.environ["HOOK_SCRIPT_DIR"]) / "uninstall.sh"
     subprocess.run(
         ["/bin/bash", str(script)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def registry_update(command, primary_repo):
+    script = pathlib.Path(os.environ["HOOK_SCRIPT_DIR"]) / "registry.py"
+    subprocess.run(
+        ["python3", str(script), command, primary_repo],
         text=True,
         capture_output=True,
         check=False,
@@ -83,8 +101,9 @@ root = repo_root_from(payload["cwd"])
 if root is None:
     sys.exit(0)
 
-state, state_path = load_state(root)
+state, state_path, primary_repo = load_state(root)
 if not state or not state.get("active"):
+    registry_update("remove", primary_repo)
     cleanup_hooks()
     sys.exit(0)
 
@@ -111,6 +130,7 @@ if has_done_marker(last_message, state["done_marker"]):
     state["stopped_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     state["updated_at"] = state["stopped_at"]
     write_state(state_path, state)
+    registry_update("remove", primary_repo)
     cleanup_hooks()
     sys.exit(0)
 
@@ -148,6 +168,7 @@ if state.get("max_turns") is not None and state["turn_count"] >= state["max_turn
     state["stopped_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     state["updated_at"] = state["stopped_at"]
     write_state(state_path, state)
+    registry_update("remove", primary_repo)
     cleanup_hooks()
     print(
         json.dumps(
