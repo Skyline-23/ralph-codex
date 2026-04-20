@@ -23,49 +23,22 @@ state_file() {
 }
 
 ensure_hooks() {
-  /bin/bash "$SCRIPT_DIR/install.sh" >/dev/null
+  /bin/bash "$SCRIPT_DIR/install.sh" "$(repo_root)" >/dev/null
 }
 
 remove_hooks() {
-  /bin/bash "$SCRIPT_DIR/uninstall.sh" >/dev/null
-}
-
-register_root() {
-  python3 "$SCRIPT_DIR/registry.py" add "$1" >/dev/null
-}
-
-unregister_root() {
-  python3 "$SCRIPT_DIR/registry.py" remove "$1" >/dev/null
+  /bin/bash "$SCRIPT_DIR/uninstall.sh" "$(repo_root)" >/dev/null
 }
 
 resolve_state_path() {
-  python3 - "$PWD" <<'PY'
-import json
-import pathlib
-import subprocess
-import sys
-
-cwd = pathlib.Path(sys.argv[1]).resolve()
-result = subprocess.run(
-    ["git", "rev-parse", "--show-toplevel"],
-    cwd=cwd,
-    text=True,
-    capture_output=True,
-    check=False,
-)
-if result.returncode != 0:
-    raise SystemExit("not inside a git repo")
-root = pathlib.Path(result.stdout.strip())
-state_path = root / ".codex-ralph" / "state.json"
-if state_path.exists():
-    print(state_path)
-    raise SystemExit(0)
-pointer_path = root / ".codex-ralph" / "session.json"
-if pointer_path.exists():
-    print(json.loads(pointer_path.read_text())["state_path"])
-    raise SystemExit(0)
-raise SystemExit(f"no ralph state for {root}")
-PY
+  local path
+  path="$(state_file)"
+  if [[ -f "$path" ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  echo "no ralph state for $(repo_root)" >&2
+  exit 1
 }
 
 exclude_state_dir() {
@@ -115,8 +88,7 @@ start_loop() {
     exit 1
   fi
 
-  local state_json primary_root
-  ensure_hooks
+  local state_json
   exclude_state_dir
   mkdir -p "$(state_dir)"
   touch "$(state_dir)/run.log"
@@ -136,14 +108,13 @@ goal = sys.argv[3]
 max_turns_raw = sys.argv[4]
 
 state = {
-    "version": 2,
+    "version": 3,
     "active": True,
     "last_transition": "start",
     "goal": goal,
     "max_turns": int(max_turns_raw) if max_turns_raw else None,
     "turn_count": 0,
     "done_marker": "RALPH_DONE",
-    "primary_repo": repo_root,
     "repo_root": repo_root,
     "events_path": ".codex-ralph/events.tsv",
     "log_path": ".codex-ralph/run.log",
@@ -152,25 +123,16 @@ state = {
 }
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(state, indent=2) + "\n")
-(path.parent / "session.json").write_text(
-    json.dumps({"state_path": str(path), "primary_repo": repo_root}, indent=2) + "\n"
-)
 print(json.dumps(state, indent=2))
 PY
 )
-  primary_root=$(python3 - <<'PY' "$state_json"
-import json
-import sys
-print(json.loads(sys.argv[1])["primary_repo"])
-PY
-)
-  register_root "$primary_root"
+  ensure_hooks
   printf '%s\n' "$state_json"
 }
 
 toggle_active() {
   local value="$1"
-  local state_json primary_root
+  local state_json
   state_json=$(python3 - "$(resolve_state_path)" "$value" <<'PY'
 import json
 import pathlib
@@ -188,45 +150,21 @@ path.write_text(json.dumps(state, indent=2) + "\n")
 print(json.dumps(state, indent=2))
 PY
 )
-  primary_root=$(python3 - <<'PY' "$state_json"
-import json
-import sys
-print(json.loads(sys.argv[1])["primary_repo"])
-PY
-)
-  if [[ "$value" == "true" ]]; then
-    register_root "$primary_root"
-  else
-    unregister_root "$primary_root"
-  fi
   printf '%s\n' "$state_json"
 }
 
 reset_loop() {
-  local state_path primary_root
+  local state_path
   state_path=$(resolve_state_path)
-  primary_root=$(python3 - <<'PY' "$state_path"
-import json
-import pathlib
-import sys
-print(json.loads(pathlib.Path(sys.argv[1]).read_text())["primary_repo"])
-PY
-)
   python3 - "$state_path" <<'PY'
-import json
 import pathlib
 import shutil
 import sys
 
 state_path = pathlib.Path(sys.argv[1])
-state = json.loads(state_path.read_text())
 state_dir = state_path.parent
-session_file = state_dir / "session.json"
-if session_file.exists():
-    session_file.unlink()
 shutil.rmtree(state_dir, ignore_errors=True)
 PY
-  unregister_root "$primary_root"
 }
 
 case "$command_name" in

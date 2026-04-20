@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import json
-import os
 import pathlib
 import shutil
 import subprocess
@@ -8,16 +7,15 @@ import tempfile
 import unittest
 
 
-SKILL_ROOT = pathlib.Path(__file__).resolve().parent
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
-def run(args, *, cwd=None, env=None, input_text=None):
+def run(args, *, cwd=None):
     return subprocess.run(
         args,
         cwd=cwd,
-        env=env,
-        input=input_text,
         text=True,
+        input="",
         capture_output=True,
         check=False,
     )
@@ -32,156 +30,57 @@ def init_git_repo(path: pathlib.Path) -> None:
     run(["git", "commit", "-qm", "init"], cwd=path)
 
 
-class RalphNativeHookTests(unittest.TestCase):
+def expected_commands():
+    return {
+        f'/bin/bash "{REPO_ROOT}/scripts/hook.sh" session-start',
+        f'/bin/bash "{REPO_ROOT}/scripts/hook.sh" user-prompt',
+        f'/bin/bash "{REPO_ROOT}/scripts/hook.sh" stop',
+    }
+
+
+def commands_in_hooks(hooks_path: pathlib.Path):
+    if not hooks_path.exists():
+        return set()
+    data = json.loads(hooks_path.read_text())
+    hooks = data.get("hooks", {})
+    commands = set()
+    for groups in hooks.values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for hook in group.get("hooks", []):
+                if isinstance(hook, dict) and "command" in hook:
+                    commands.add(hook["command"])
+    return commands
+
+
+class RalphRepoLocalHookTests(unittest.TestCase):
     def setUp(self):
-        self.tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="ralph-hooks-"))
-        self.codex_home = self.tmpdir / "codex-home"
-        self.env = os.environ | {"CODEX_HOME": str(self.codex_home)}
+        self.tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="ralph-repo-local-"))
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_install_tolerates_trailing_garbage_in_hooks_json(self):
-        self.codex_home.mkdir(parents=True, exist_ok=True)
-        hooks_path = self.codex_home / "hooks.json"
-        hooks_path.write_text('{"hooks":{"Stop":[]}}\nTRAILING_GARBAGE\n')
+    def test_install_and_uninstall_touch_only_repo_local_codex_dir(self):
+        repo = self.tmpdir / "repo"
+        repo.mkdir()
+        init_git_repo(repo)
 
-        result = run(
-            ["/bin/bash", str(SKILL_ROOT / "scripts" / "install.sh")],
-            env=self.env,
-        )
+        install = run(["/bin/bash", str(REPO_ROOT / "scripts" / "install.sh")], cwd=repo)
+        self.assertEqual(install.returncode, 0, msg=install.stderr or install.stdout)
 
-        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
-        data = json.loads(hooks_path.read_text())
-        commands = {
-            hook["command"]
-            for groups in data["hooks"].values()
-            for group in groups
-            for hook in group["hooks"]
-            if isinstance(hook, dict) and "command" in hook
-        }
-        self.assertIn(
-            f'/bin/bash "{SKILL_ROOT}/scripts/hook.sh" session-start',
-            commands,
-        )
-        self.assertIn(
-            f'/bin/bash "{SKILL_ROOT}/scripts/hook.sh" user-prompt',
-            commands,
-        )
-        self.assertIn(
-            f'/bin/bash "{SKILL_ROOT}/scripts/hook.sh" stop',
-            commands,
-        )
+        repo_config = repo / ".codex" / "config.toml"
+        repo_hooks = repo / ".codex" / "hooks.json"
+        self.assertTrue(repo_config.exists())
+        self.assertTrue(repo_hooks.exists())
+        self.assertIn("codex_hooks = true", repo_config.read_text())
+        self.assertTrue(expected_commands().issubset(commands_in_hooks(repo_hooks)))
 
-    def test_uninstall_keeps_hooks_when_another_ralph_loop_is_active(self):
-        self.codex_home.mkdir(parents=True, exist_ok=True)
-        hooks_path = self.codex_home / "hooks.json"
-        commands = [
-            f'/bin/bash "{SKILL_ROOT}/scripts/hook.sh" session-start',
-            f'/bin/bash "{SKILL_ROOT}/scripts/hook.sh" user-prompt',
-            f'/bin/bash "{SKILL_ROOT}/scripts/hook.sh" stop',
-        ]
-        hooks_path.write_text(
-            json.dumps(
-                {
-                    "hooks": {
-                        "SessionStart": [{"hooks": [{"type": "command", "command": commands[0]}]}],
-                        "UserPromptSubmit": [{"hooks": [{"type": "command", "command": commands[1]}]}],
-                        "Stop": [{"hooks": [{"type": "command", "command": commands[2]}]}],
-                    }
-                }
-            )
-            + "\n"
-        )
-
-        active_repo = self.tmpdir / "active-repo"
-        active_repo.mkdir()
-        init_git_repo(active_repo)
-        state_dir = active_repo / ".codex-ralph"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / "state.json").write_text(
-            json.dumps(
-                {
-                    "active": True,
-                    "primary_repo": str(active_repo),
-                    "goal": "keep hooks alive",
-                    "turn_count": 1,
-                    "done_marker": "RALPH_DONE",
-                }
-            )
-            + "\n"
-        )
-        (self.codex_home / "ralph-codex-registry.json").write_text(
-            json.dumps({"roots": [str(active_repo)]}) + "\n"
-        )
-
-        result = run(
-            ["/bin/bash", str(SKILL_ROOT / "scripts" / "uninstall.sh")],
-            env=self.env,
-        )
-
-        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
-        data = json.loads(hooks_path.read_text())
-        remaining = {
-            hook["command"]
-            for groups in data["hooks"].values()
-            for group in groups
-            for hook in group["hooks"]
-            if isinstance(hook, dict) and "command" in hook
-        }
-        for command in commands:
-            self.assertIn(command, remaining)
-
-    def test_hook_reads_state_via_session_pointer(self):
-        primary_repo = self.tmpdir / "primary-repo"
-        secondary_repo = self.tmpdir / "secondary-repo"
-        primary_repo.mkdir()
-        secondary_repo.mkdir()
-        init_git_repo(primary_repo)
-        init_git_repo(secondary_repo)
-
-        primary_state_dir = primary_repo / ".codex-ralph"
-        primary_state_dir.mkdir(parents=True, exist_ok=True)
-        state_path = primary_state_dir / "state.json"
-        state_path.write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "active": True,
-                    "goal": "follow pointer",
-                    "turn_count": 3,
-                    "max_turns": None,
-                    "done_marker": "RALPH_DONE",
-                    "primary_repo": str(primary_repo),
-                }
-            )
-            + "\n"
-        )
-
-        secondary_state_dir = secondary_repo / ".codex-ralph"
-        secondary_state_dir.mkdir(parents=True, exist_ok=True)
-        (secondary_state_dir / "session.json").write_text(
-            json.dumps(
-                {
-                    "state_path": str(state_path),
-                    "primary_repo": str(primary_repo),
-                }
-            )
-            + "\n"
-        )
-
-        payload = json.dumps({"cwd": str(secondary_repo)})
-        result = run(
-            ["/bin/bash", str(SKILL_ROOT / "scripts" / "hook.sh"), "session-start"],
-            env=self.env,
-            input_text=payload,
-        )
-
-        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
-        response = json.loads(result.stdout)
-        context = response["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("follow pointer", context)
-        self.assertIn("Turn count: 3", context)
+        uninstall = run(["/bin/bash", str(REPO_ROOT / "scripts" / "uninstall.sh")], cwd=repo)
+        self.assertEqual(uninstall.returncode, 0, msg=uninstall.stderr or uninstall.stdout)
+        self.assertTrue(commands_in_hooks(repo_hooks).isdisjoint(expected_commands()))
 
 
 if __name__ == "__main__":
